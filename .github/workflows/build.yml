@@ -1,0 +1,110 @@
+name: Gradle Package Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      next_snapshot_version:
+        description: "Опционально. Следующая snapshot версия (например, 0.6.3-SNAPSHOT). Если пусто, патч-номер увеличится автоматически."
+        required: false
+        default: ""
+      version_file:
+        description: "Путь к Java файлу, содержащему константу VERSION."
+        required: false
+        # ЗАМЕНИТЕ на ваш путь, например: src/main/java/com/example/App.java
+        default: "src/main/java/com/example/Version.java"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: manual-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    if: ${{ github.ref_type == 'branch' }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          server-id: github
+          settings-path: ${{ github.workspace }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare version and Tag
+        id: prep
+        env:
+          VERSION_FILE: ${{ github.event.inputs.version_file }}
+          NEXT_SNAPSHOT_INPUT: ${{ github.event.inputs.next_snapshot_version }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Проверка файла
+          if [[ ! -f "${VERSION_FILE}" ]]; then
+            echo "Файл версии не найден: ${VERSION_FILE}"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Поиск строки с версией
+          version_line="$(grep -E 'String[[:space:]]+VERSION[[:space:]]*=' "${VERSION_FILE}" | head -n 1 || true)"
+          current_version="$(echo "${version_line}" | sed -E 's/.*VERSION[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+          
+          echo "Текущая версия: $current_version"
+          
+          # Убираем -SNAPSHOT для релиза
+          release_version="${current_version%-SNAPSHOT}"
+          
+          # Вычисляем следующую версию
+          if [[ -n "${NEXT_SNAPSHOT_INPUT}" ]]; then
+            next_snapshot_version="${NEXT_SNAPSHOT_INPUT}"
+          else
+            IFS='.' read -r major minor patch <<< "${release_version}"
+            patch=$((patch + 1))
+            next_snapshot_version="${major}.${minor}.${patch}-SNAPSHOT"
+          fi
+
+          # 1. Устанавливаем release версию, коммитим и пушим тег
+          sed -i -E "s/(VERSION[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${release_version}\2/" "${VERSION_FILE}"
+          git add "${VERSION_FILE}"
+          git commit -m "prepare release ${release_version}"
+          git tag "${release_version}"
+          git push origin "HEAD:${BRANCH_NAME}" --tags
+
+          # Сохраняем release_version для следующих шагов, если понадобится
+          echo "RELEASE_VERSION=${release_version}" >> $GITHUB_ENV
+          echo "NEXT_VERSION=${next_snapshot_version}" >> $GITHUB_ENV
+
+      - name: Build and Publish
+        run: ./gradlew build publish
+        env:
+          USERNAME: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump to Next Snapshot
+        env:
+          VERSION_FILE: ${{ github.event.inputs.version_file }}
+          NEXT_VERSION: ${{ env.NEXT_VERSION }}
+          BRANCH_NAME: ${{ github.ref_name }}
+        run: |
+          # 2. Устанавливаем следующую snapshot версию
+          sed -i -E "s/(VERSION[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${NEXT_VERSION}\2/" "${VERSION_FILE}"
+          git add "${VERSION_FILE}"
+          git commit -m "prepare for next development iteration ${NEXT_VERSION}"
+          git push origin "HEAD:${BRANCH_NAME}"
