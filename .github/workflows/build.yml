@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       next_snapshot_version:
-        description: "Опционально. Следующая snapshot версия (например, 0.6.3-SNAPSHOT). Если пусто, патч-номер увеличится автоматически."
+        description: "Опционально. Следующая snapshot версия (например, 0.6.4-SNAPSHOT). Если пусто, патч-номер увеличится автоматически."
         required: false
         default: ""
       version_file:
         description: "Путь к Java файлу, содержащему константу VERSION."
         required: false
-        # ЗАМЕНИТЕ на ваш путь, например: src/main/java/com/example/App.java
+        # ЗАМЕНИТЕ ЭТОТ ПУТЬ НА ВАШ РЕАЛЬНЫЙ ПУТЬ К ФАЙЛУ
         default: "Procyon.Core/src/main/java/com/strobel/Procyon.java"
 
 permissions:
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-release:
+  release:
     if: ${{ github.ref_type == 'branch' }}
     runs-on: ubuntu-latest
     
@@ -53,25 +53,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Проверка файла
           if [[ ! -f "${VERSION_FILE}" ]]; then
-            echo "Файл версии не найден: ${VERSION_FILE}"
+            echo "Ошибка: Файл версии не найден по пути: ${VERSION_FILE}"
             exit 1
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Поиск строки с версией
+          # Извлекаем текущую версию из файла
           version_line="$(grep -E 'String[[:space:]]+VERSION[[:space:]]*=' "${VERSION_FILE}" | head -n 1 || true)"
           current_version="$(echo "${version_line}" | sed -E 's/.*VERSION[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
           
-          echo "Текущая версия: $current_version"
+          echo "Текущая версия из файла: $current_version"
           
-          # Убираем -SNAPSHOT для релиза
+          if [[ "${current_version}" != *-SNAPSHOT ]]; then
+            echo "Ошибка: Ожидалась версия с суффиксом -SNAPSHOT (например, 0.6.3-SNAPSHOT), но найдено: ${current_version}"
+            exit 1
+          fi
+
+          # Версия для релиза (без -SNAPSHOT)
           release_version="${current_version%-SNAPSHOT}"
           
-          # Вычисляем следующую версию
+          # Определение следующей версии
           if [[ -n "${NEXT_SNAPSHOT_INPUT}" ]]; then
             next_snapshot_version="${NEXT_SNAPSHOT_INPUT}"
           else
@@ -80,14 +84,25 @@ jobs:
             next_snapshot_version="${major}.${minor}.${patch}-SNAPSHOT"
           fi
 
-          # 1. Устанавливаем release версию, коммитим и пушим тег
+          echo "Релизная версия: $release_version"
+          echo "Следующая версия в разработке: $next_snapshot_version"
+
+          # 1. Меняем на версию релиза и пушим
           sed -i -E "s/(VERSION[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${release_version}\2/" "${VERSION_FILE}"
           git add "${VERSION_FILE}"
           git commit -m "prepare release ${release_version}"
-          git tag "${release_version}"
+          
+          # Проверка на существование тега, чтобы не было ошибки fatal: tag already exists
+          if git rev-parse -q --verify "refs/tags/${release_version}" >/dev/null; then
+            echo "Предупреждение: Тег ${release_version} уже существует. Пропускаю создание тега."
+          else
+            git tag "${release_version}"
+            echo "Создан тег ${release_version}"
+          fi
+          
           git push origin "HEAD:${BRANCH_NAME}" --tags
 
-          # Сохраняем release_version для следующих шагов, если понадобится
+          # Передаем переменные в следующие шаги
           echo "RELEASE_VERSION=${release_version}" >> $GITHUB_ENV
           echo "NEXT_VERSION=${next_snapshot_version}" >> $GITHUB_ENV
 
@@ -103,7 +118,7 @@ jobs:
           NEXT_VERSION: ${{ env.NEXT_VERSION }}
           BRANCH_NAME: ${{ github.ref_name }}
         run: |
-          # 2. Устанавливаем следующую snapshot версию
+          # 2. Устанавливаем следующую snapshot версию для дальнейшей разработки
           sed -i -E "s/(VERSION[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${NEXT_VERSION}\2/" "${VERSION_FILE}"
           git add "${VERSION_FILE}"
           git commit -m "prepare for next development iteration ${NEXT_VERSION}"
