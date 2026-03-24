@@ -11,7 +11,7 @@ on:
         description: "Путь к Java файлу, содержащему константу VERSION."
         required: false
         # ЗАМЕНИТЕ на ваш путь, например: src/main/java/com/example/App.java
-        default: "src/main/java/com/example/Version.java"
+        default: "Procyon.Core/src/main/java/com/strobel/Procyon.java"
 
 permissions:
   contents: write
